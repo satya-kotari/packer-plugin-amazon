@@ -849,12 +849,6 @@ func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
 
 	}
 
-	switch c.CapacityReservationPreference {
-	case "none", "open":
-	default:
-		errs = append(errs, fmt.Errorf(`capacity_reservation_preference only accepts 'none' or 'open' values`))
-	}
-
 	var tenancy string
 	tenancies := []string{c.Placement.Tenancy, c.Tenancy}
 
