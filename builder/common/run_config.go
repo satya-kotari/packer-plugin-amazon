@@ -849,9 +849,6 @@ func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
 
 	}
 
-	if c.CapacityReservationPreference == "" {
-		c.CapacityReservationPreference = "none"
-	}
 	switch c.CapacityReservationPreference {
 	case "none", "open":
 	default:
