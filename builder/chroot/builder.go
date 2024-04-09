@@ -163,12 +163,12 @@ type Config struct {
 	//filter, but will cause Packer to fail if the `source_ami` does not exist.
 	SourceAmiFilter awscommon.AmiFilterOptions `mapstructure:"source_ami_filter" required:"false"`
 	// Key/value pair tags to apply to the volumes that are *launched*. This is
-	// a [template engine](/docs/templates/legacy_json_templates/engine), see [Build template
+	// a [template engine](/packer/docs/templates/legacy_json_templates/engine), see [Build template
 	// data](#build-template-data) for more information.
 	RootVolumeTags map[string]string `mapstructure:"root_volume_tags" required:"false"`
 	// Same as [`root_volume_tags`](#root_volume_tags) but defined as a
 	// singular block containing a `key` and a `value` field. In HCL2 mode the
-	// [`dynamic_block`](/docs/templates/hcl_templates/expressions#dynamic-blocks)
+	// [`dynamic_block`](/packer/docs/templates/hcl_templates/expressions#dynamic-blocks)
 	// will allow you to create those programatically.
 	RootVolumeTag config.KeyValues `mapstructure:"root_volume_tag" required:"false"`
 	// Whether or not to encrypt the volumes that are *launched*. By default, Packer will keep
@@ -199,6 +199,11 @@ type Config struct {
 	// more information. Defaults to `legacy-bios` when `ami_architecture` is `x86_64` and
 	// `uefi` when `ami_architecture` is `arm64`.
 	BootMode string `mapstructure:"boot_mode" required:"false"`
+	// Enforce version of the Instance Metadata Service on the built AMI.
+	// Valid options are unset (legacy) and `v2.0`. See the documentation on
+	// [IMDS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html)
+	// for more information. Defaults to legacy.
+	IMDSSupport string `mapstructure:"imds_support" required:"false"`
 
 	ctx interpolate.Context
 }
@@ -370,6 +375,10 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 		errs = packersdk.MultiErrorAppend(errs, errors.New(`The only valid ami_architecture values are "arm64", "i386", "x86_64", or "x86_64_mac"`))
 	}
 
+	if b.config.IMDSSupport != "" && b.config.IMDSSupport != ec2.ImdsSupportValuesV20 {
+		errs = packersdk.MultiErrorAppend(errs, fmt.Errorf(`The only valid imds_support values are %q or the empty string`, ec2.ImdsSupportValuesV20))
+	}
+
 	if b.config.BootMode != "" {
 		valid := false
 		for _, validBootMode := range []string{"legacy-bios", "uefi"} {
@@ -502,6 +511,7 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			AMISkipBuildRegion:       b.config.AMISkipBuildRegion,
 			PollingConfig:            b.config.PollingConfig,
 			BootMode:                 b.config.BootMode,
+			IMDSSupport:              b.config.IMDSSupport,
 		},
 		&awscommon.StepAMIRegionCopy{
 			AccessConfig:      &b.config.AccessConfig,

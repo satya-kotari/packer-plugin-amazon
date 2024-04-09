@@ -18,6 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/packer-plugin-amazon/builder/common"
 	amazon_acc "github.com/hashicorp/packer-plugin-amazon/builder/ebs/acceptance"
 	"github.com/hashicorp/packer-plugin-sdk/acctest"
@@ -71,6 +72,69 @@ func TestAccBuilder_EbsRegionCopy(t *testing.T) {
 				}
 			}
 			return checkRegionCopy(amiName, []string{"us-east-1", "us-west-2"})
+		},
+	}
+	acctest.TestPlugin(t, testCase)
+}
+
+func TestAccBuilder_EbsRegionsCopyWithDeprecation(t *testing.T) {
+	amiName := fmt.Sprintf("packer-test-builder-region-copy-deprecate-acc-test-%d", time.Now().Unix())
+
+	amis := []amazon_acc.AMIHelper{
+		{
+			Region: "us-east-1",
+			Name:   amiName,
+		},
+		{
+			Region: "us-west-1",
+			Name:   amiName,
+		},
+	}
+
+	deprecationTime := time.Now().UTC().AddDate(0, 0, 1)
+	deprecationTimeStr := deprecationTime.Format(time.RFC3339)
+	testCase := &acctest.PluginTestCase{
+		Name:     "amazon-ebs_region_copy_with_deprecation_test",
+		Template: fmt.Sprintf(testBuilderAccRegionCopyDeprecated, deprecationTimeStr, amiName),
+		Teardown: func() error {
+			err := amis[0].CleanUpAmi()
+			if err != nil {
+				t.Logf("ami %s cleanup failed: %s", amis[0].Name, err)
+			}
+			err = amis[1].CleanUpAmi()
+			if err != nil {
+				t.Logf("ami %s cleanup failed: %s", amis[1].Name, err)
+			}
+			return nil
+		},
+		Check: func(buildCommand *exec.Cmd, logfile string) error {
+			if buildCommand.ProcessState != nil {
+				if buildCommand.ProcessState.ExitCode() != 0 {
+					return fmt.Errorf("Bad exit code. Logfile: %s", logfile)
+				}
+			}
+
+			var errors error
+
+			err := checkRegionCopy(
+				amiName,
+				[]string{"us-east-1", "us-west-1"})
+			if err != nil {
+				errors = multierror.Append(errors, err)
+			}
+
+			for _, ami := range amis {
+				err := checkDeprecationEnabled(ami, deprecationTime)
+				if err != nil {
+					errors = multierror.Append(errors,
+						fmt.Errorf(
+							"AMI region %s: %s",
+							ami.Region,
+							err))
+				}
+			}
+
+			return errors
 		},
 	}
 	acctest.TestPlugin(t, testCase)
@@ -162,7 +226,7 @@ func TestAccBuilder_EbsForceDeleteSnapshot(t *testing.T) {
 	acctest.TestPlugin(t, testCase)
 
 	// Get image data by AMI name
-	ec2conn, _ := testEC2Conn()
+	ec2conn, _ := testEC2Conn("us-east-1")
 	describeInput := &ec2.DescribeImagesInput{Filters: []*ec2.Filter{
 		{
 			Name:   aws.String("name"),
@@ -205,7 +269,7 @@ func TestAccBuilder_EbsForceDeleteSnapshot(t *testing.T) {
 
 func checkSnapshotsDeleted(snapshotIds []*string) error {
 	// Verify the snapshots are gone
-	ec2conn, _ := testEC2Conn()
+	ec2conn, _ := testEC2Conn("us-east-1")
 	snapshotResp, _ := ec2conn.DescribeSnapshots(
 		&ec2.DescribeSnapshotsInput{SnapshotIds: snapshotIds},
 	)
@@ -260,7 +324,7 @@ func checkAMISharing(ami amazon_acc.AMIHelper, count int, uid, group string) err
 		return fmt.Errorf("failed to find ami %s at region %s", ami.Name, ami.Region)
 	}
 
-	ec2conn, _ := testEC2Conn()
+	ec2conn, _ := testEC2Conn("us-east-1")
 	imageResp, err := ec2conn.DescribeImageAttribute(&ec2.DescribeImageAttributeInput{
 		Attribute: aws.String("launchPermission"),
 		ImageId:   images[0].ImageId,
@@ -355,6 +419,79 @@ func TestAccBuilder_EbsEncryptedBootWithDeprecation(t *testing.T) {
 	acctest.TestPlugin(t, testCase)
 }
 
+func TestAccBuilder_EbsCopyRegionEncryptedBootWithDeprecation(t *testing.T) {
+	amiName := fmt.Sprintf(
+		"packer-test-builder-region-copy-encrypt-deprecate-acc-test-%d",
+		time.Now().Unix())
+
+	amis := []amazon_acc.AMIHelper{
+		{
+			Region: "us-east-1",
+			Name:   amiName,
+		},
+		{
+			Region: "us-west-1",
+			Name:   amiName,
+		},
+	}
+
+	deprecationTime := time.Now().UTC().AddDate(0, 0, 1)
+	deprecationTimeStr := deprecationTime.Format(time.RFC3339)
+	testCase := &acctest.PluginTestCase{
+		Name:     "amazon-ebs_region_copy_encrypted_boot_with_deprecation_test",
+		Template: fmt.Sprintf(testBuilderAccRegionCopyEncryptedAndDeprecated, deprecationTimeStr, amiName),
+		Teardown: func() error {
+			err := amis[0].CleanUpAmi()
+			if err != nil {
+				t.Logf("ami %s cleanup failed: %s", amis[0].Name, err)
+			}
+			err = amis[1].CleanUpAmi()
+			if err != nil {
+				t.Logf("ami %s cleanup failed: %s", amis[1].Name, err)
+			}
+			return nil
+		},
+		Check: func(buildCommand *exec.Cmd, logfile string) error {
+			var result error
+
+			if buildCommand.ProcessState != nil {
+				if buildCommand.ProcessState.ExitCode() != 0 {
+					return fmt.Errorf("Bad exit code. Logfile: %s", logfile)
+				}
+			}
+
+			err := checkRegionCopy(
+				amiName,
+				[]string{"us-east-1", "us-west-1"})
+			if err != nil {
+				result = multierror.Append(result, err)
+			}
+
+			for _, ami := range amis {
+				err := checkDeprecationEnabled(ami, deprecationTime)
+				if err != nil {
+					result = multierror.Append(result, fmt.Errorf(
+						"Deprectiation failed, AMI region %s: %s",
+						ami.Region,
+						err))
+				}
+
+				err = checkBootEncrypted(ami)
+				if err != nil {
+					result = multierror.Append(result, fmt.Errorf(
+						"Encryption check failed, AMI region %s: %s",
+						ami.Region,
+						err))
+				}
+			}
+
+			return result
+		},
+	}
+
+	acctest.TestPlugin(t, testCase)
+}
+
 func checkBootEncrypted(ami amazon_acc.AMIHelper) error {
 	images, err := ami.GetAmi()
 	if err != nil || len(images) == 0 {
@@ -362,7 +499,7 @@ func checkBootEncrypted(ami amazon_acc.AMIHelper) error {
 	}
 
 	// describe the image, get block devices with a snapshot
-	ec2conn, _ := testEC2Conn()
+	ec2conn, _ := testEC2Conn(ami.Region)
 	imageResp, err := ec2conn.DescribeImages(&ec2.DescribeImagesInput{
 		ImageIds: []*string{images[0].ImageId},
 	})
@@ -439,7 +576,11 @@ func checkDeprecationEnabled(ami amazon_acc.AMIHelper, deprecationTime time.Time
 		return fmt.Errorf("Failed to find ami %s at region %s", ami.Name, ami.Region)
 	}
 
-	ec2conn, _ := testEC2Conn()
+	ec2conn, err := testEC2Conn(ami.Region)
+	if err != nil {
+		return fmt.Errorf("Failed to connect to AWS on region %q: %s", ami.Region, err)
+	}
+
 	imageResp, err := ec2conn.DescribeImages(&ec2.DescribeImagesInput{
 		ImageIds: []*string{images[0].ImageId},
 	})
@@ -629,8 +770,42 @@ func TestAccBuilder_EbsKeyPair_rsaSHA2OnlyServer(t *testing.T) {
 	acctest.TestPlugin(t, testcase)
 }
 
-func testEC2Conn() (*ec2.EC2, error) {
-	access := &common.AccessConfig{RawRegion: "us-east-1"}
+//go:embed test-fixtures/unlimited-credits/burstable_instances.pkr.hcl
+var testBurstableInstanceTypes string
+
+func TestAccBuilder_EnableUnlimitedCredits(t *testing.T) {
+	testcase := &acctest.PluginTestCase{
+		Name:     "amazon-ebs_unlimited_credits_test",
+		Template: testBurstableInstanceTypes,
+		Check: func(buildCommand *exec.Cmd, logfile string) error {
+			if buildCommand.ProcessState.ExitCode() != 0 {
+				return fmt.Errorf("Bad exit code. Logfile: %s", logfile)
+			}
+			return nil
+		},
+	}
+	acctest.TestPlugin(t, testcase)
+}
+
+//go:embed test-fixtures/unlimited-credits/burstable_spot_instances.pkr.hcl
+var testBurstableSpotInstanceTypes string
+
+func TestAccBuilder_EnableUnlimitedCredits_withSpotInstances(t *testing.T) {
+	testcase := &acctest.PluginTestCase{
+		Name:     "amazon-ebs_unlimited_credits_spot_instance_test",
+		Template: testBurstableSpotInstanceTypes,
+		Check: func(buildCommand *exec.Cmd, logfile string) error {
+			if buildCommand.ProcessState.ExitCode() != 0 {
+				return fmt.Errorf("Bad exit code. Logfile: %s", logfile)
+			}
+			return nil
+		},
+	}
+	acctest.TestPlugin(t, testcase)
+}
+
+func testEC2Conn(region string) (*ec2.EC2, error) {
+	access := &common.AccessConfig{RawRegion: region}
 	session, err := access.Session()
 	if err != nil {
 		return nil, err
@@ -662,6 +837,21 @@ const testBuilderAccRegionCopy = `
 		"ssh_username": "ubuntu",
 		"ami_name": "%s",
 		"ami_regions": ["us-east-1", "us-west-2"]
+	}]
+}
+`
+
+const testBuilderAccRegionCopyDeprecated = `
+{
+	"builders": [{
+		"type": "amazon-ebs",
+		"region": "us-east-1",
+		"instance_type": "m3.medium",
+		"source_ami":"ami-76b2a71e",
+		"ssh_username": "ubuntu",
+		"deprecate_at" : "%s",
+		"ami_name": "%s",
+		"ami_regions": ["us-east-1", "us-west-1"]
 	}]
 }
 `
@@ -737,6 +927,22 @@ const testBuilderAccEncryptedDeprecated = `
 		"deprecate_at" : "%s",
 		"ami_name": "%s",
 		"encrypt_boot": true
+	}]
+}
+`
+
+const testBuilderAccRegionCopyEncryptedAndDeprecated = `
+{
+	"builders": [{
+		"type": "amazon-ebs",
+		"region": "us-east-1",
+		"instance_type": "m3.medium",
+		"source_ami":"ami-76b2a71e",
+		"ssh_username": "ubuntu",
+		"deprecate_at" : "%s",
+		"ami_name": "%s",
+		"encrypt_boot": true,
+		"ami_regions": ["us-east-1", "us-west-1"]
 	}]
 }
 `

@@ -58,7 +58,7 @@ type Config struct {
 	// *launched* to create EBS Volumes. These tags will *not* appear in the
 	// tags of the resulting EBS volumes unless they're duplicated under `tags`
 	// in the `ebs_volumes` setting. This is a [template
-	// engine](/docs/templates/legacy_json_templates/engine), see [Build template
+	// engine](/packer/docs/templates/legacy_json_templates/engine), see [Build template
 	// data](#build-template-data) for more information.
 	//
 	//  Note: The tags specified here will be *temporarily* applied to volumes
@@ -70,7 +70,7 @@ type Config struct {
 	// Same as [`run_volume_tags`](#run_volume_tags) but defined as a singular
 	// repeatable block containing a `key` and a `value` field. In HCL2 mode
 	// the
-	// [`dynamic_block`](/docs/templates/hcl_templates/expressions#dynamic-blocks)
+	// [`dynamic_block`](/packer/docs/templates/hcl_templates/expressions#dynamic-blocks)
 	// will allow you to create those programatically.
 	VolumeRunTag config.KeyValues `mapstructure:"run_volume_tag"`
 
@@ -152,6 +152,12 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 			"understand how Packer requests Spot instances.")
 	}
 
+	if b.config.RunConfig.EnableT2Unlimited {
+		warns = append(warns, "enable_t2_unlimited is deprecated please use "+
+			"enable_unlimited_credits. In future versions of "+
+			"Packer, inclusion of enable_t2_unlimited will error your builds.")
+	}
+
 	if errs != nil && len(errs.Errors) > 0 {
 		return nil, warns, errs
 	}
@@ -194,6 +200,8 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Debug:                             b.config.PackerDebug,
 			EbsOptimized:                      b.config.EbsOptimized,
 			ExpectedRootDevice:                "ebs",
+			IsBurstableInstanceType:           b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:            b.config.EnableUnlimitedCredits,
 			HttpEndpoint:                      b.config.Metadata.HttpEndpoint,
 			HttpTokens:                        b.config.Metadata.HttpTokens,
 			HttpPutResponseHopLimit:           b.config.Metadata.HttpPutResponseHopLimit,
@@ -226,11 +234,16 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			PollingConfig:                     b.config.PollingConfig,
 			AssociatePublicIpAddress:          b.config.AssociatePublicIpAddress,
 			LaunchMappings:                    b.config.launchBlockDevices,
+			CapacityReservationPreference:     b.config.CapacityReservationPreference,
+			CapacityReservationId:             b.config.CapacityReservationId,
+			CapacityReservationGroupArn:       b.config.CapacityReservationGroupArn,
 			Comm:                              &b.config.RunConfig.Comm,
 			Ctx:                               b.config.ctx,
 			Debug:                             b.config.PackerDebug,
 			EbsOptimized:                      b.config.EbsOptimized,
-			EnableT2Unlimited:                 b.config.EnableT2Unlimited,
+			EnableNitroEnclave:                b.config.EnableNitroEnclave,
+			IsBurstableInstanceType:           b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:            b.config.EnableUnlimitedCredits,
 			ExpectedRootDevice:                "ebs",
 			HttpEndpoint:                      b.config.Metadata.HttpEndpoint,
 			HttpTokens:                        b.config.Metadata.HttpTokens,
@@ -276,14 +289,15 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Ctx:          b.config.ctx,
 		},
 		&awscommon.StepSecurityGroup{
-			SecurityGroupFilter:    b.config.SecurityGroupFilter,
-			SecurityGroupIds:       b.config.SecurityGroupIds,
-			CommConfig:             &b.config.RunConfig.Comm,
-			TemporarySGSourceCidrs: b.config.TemporarySGSourceCidrs,
-			SkipSSHRuleCreation:    b.config.SSMAgentEnabled(),
-			IsRestricted:           b.config.IsChinaCloud(),
-			Tags:                   b.config.RunTags,
-			Ctx:                    b.config.ctx,
+			SecurityGroupFilter:       b.config.SecurityGroupFilter,
+			SecurityGroupIds:          b.config.SecurityGroupIds,
+			CommConfig:                &b.config.RunConfig.Comm,
+			TemporarySGSourceCidrs:    b.config.TemporarySGSourceCidrs,
+			TemporarySGSourcePublicIp: b.config.TemporarySGSourcePublicIp,
+			SkipSSHRuleCreation:       b.config.SSMAgentEnabled(),
+			IsRestricted:              b.config.IsChinaCloud(),
+			Tags:                      b.config.RunTags,
+			Ctx:                       b.config.ctx,
 		},
 		&awscommon.StepIamInstanceProfile{
 			IamInstanceProfile:                        b.config.IamInstanceProfile,

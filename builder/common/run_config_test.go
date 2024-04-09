@@ -128,6 +128,54 @@ func TestRunConfigPrepare_EnableT2UnlimitedBadWithSpotInstanceRequest(t *testing
 	}
 }
 
+func TestRunConfigPrepare_EnableT2UnlimitedDeprecation(t *testing.T) {
+	c := testConfig()
+	// Must have a T2 instance type if T2 Unlimited is enabled
+	c.InstanceType = "t2.micro"
+	c.EnableT2Unlimited = true
+	err := c.Prepare(nil)
+
+	if c.EnableUnlimitedCredits != true {
+		t.Errorf("expected EnableUnlimitedCredits to be true when the deprecated EnableT2Unlimited is true, but got %T", c.EnableUnlimitedCredits)
+	}
+
+	if len(err) > 0 {
+		t.Fatalf("err: %s", err)
+	}
+}
+
+func TestRunConfigPrepare_EnableUnlimitedCredits(t *testing.T) {
+
+	tc := []struct {
+		name          string
+		instanceType  string
+		enableCredits bool
+		errorCount    int
+	}{
+		{"T2 instance", "t2.micro", true, 0},
+		{"T3 instance", "t3.micro", true, 0},
+		{"T3a instance", "t3a.xlarge", true, 0},
+		{"T4g instance", "t4g.micro", true, 0},
+		{"M5 instance", "m5.micro", true, 1},
+		{"bogus t4 instance", "t4.micro", true, 1},
+		{"bogus t23 instance", "t23.micro", true, 1},
+	}
+
+	for _, tt := range tc {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			c := testConfig()
+			c.InstanceType = tt.instanceType
+			c.EnableUnlimitedCredits = tt.enableCredits
+			err := c.Prepare(nil)
+			if len(err) != tt.errorCount {
+				t.Errorf("err: %s", err)
+			}
+
+		})
+	}
+}
+
 func TestRunConfigPrepare_SpotAuto(t *testing.T) {
 	c := testConfig()
 	c.SpotPrice = "auto"
@@ -305,5 +353,39 @@ func TestRunConfigPrepare_TenancyGood(t *testing.T) {
 		if err := c.Prepare(nil); len(err) != 0 {
 			t.Fatalf("Should not error if tenancy is set to %s", vt)
 		}
+	}
+}
+
+func TestRunConfigPrepare_EnableNitroEnclaveBadWithSpotInstanceRequest(t *testing.T) {
+	c := testConfig()
+	// Nitro Enclaves cannot be used with Spot Instances
+	c.InstanceType = "c5.xlarge"
+	c.EnableNitroEnclave = true
+	c.SpotPrice = "auto"
+	err := c.Prepare(nil)
+	if len(err) != 1 {
+		t.Fatalf("Should error if Nitro Enclaves has been used in conjuntion with a Spot Price request")
+	}
+}
+
+func TestRunConfigPrepare_EnableNitroEnclaveBadWithBurstableInstanceType(t *testing.T) {
+	c := testConfig()
+	// Nitro Enclaves cannot be used with burstable instances
+	c.InstanceType = "t2.micro"
+	c.EnableNitroEnclave = true
+	err := c.Prepare(nil)
+	if len(err) != 1 {
+		t.Fatalf("Should error if Nitro Enclaves has been used in conjuntion with a burstable instance type")
+	}
+}
+
+func TestRunConfigPrepare_EnableNitroEnclaveGood(t *testing.T) {
+	c := testConfig()
+	// Nitro Enclaves cannot be used with burstable instances
+	c.InstanceType = "c5.xlarge"
+	c.EnableNitroEnclave = true
+	err := c.Prepare(nil)
+	if len(err) != 0 {
+		t.Fatalf("Should not error with valid Nitro Enclave config")
 	}
 }

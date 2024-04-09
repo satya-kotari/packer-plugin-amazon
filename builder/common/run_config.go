@@ -18,6 +18,12 @@ import (
 	"github.com/hashicorp/packer-plugin-sdk/uuid"
 )
 
+const (
+	// https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreditSpecificationRequest.html#API_CreditSpecificationRequest_Contents
+	CPUCreditsStandard  = "standard"
+	CPUCreditsUnlimited = "unlimited"
+)
+
 var reShutdownBehavior = regexp.MustCompile("^(stop|terminate)$")
 
 type SubnetFilterOptions struct {
@@ -102,13 +108,23 @@ type RunConfig struct {
 	// from July 1, 2021. [See Amazon's
 	//documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#fixed-duration-spot-instances).
 	BlockDurationMinutes int64 `mapstructure:"block_duration_minutes" required:"false"`
+	// Set the preference for using a capacity reservation if one exists.
+	// Either will be `open` or `none`. Defaults to `none`
+	CapacityReservationPreference string `mapstructure:"capacity_reservation_preference" required:"false"`
+	// Provide the specific EC2 Capacity Reservation ID that will be used
+	// by Packer.
+	CapacityReservationId string `mapstructure:"capacity_reservation_id" required:"false"`
+	// Provide the EC2 Capacity Reservation Group ARN that will be used by
+	// Packer.
+	CapacityReservationGroupArn string `mapstructure:"capacity_reservation_group_arn" required:"false"`
+
 	// Packer normally stops the build instance after all provisioners have
 	// run. For Windows instances, it is sometimes desirable to [run
 	// Sysprep](https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/Creating_EBSbacked_WinAMI.html)
 	// which will stop the instance for you. If this is set to `true`, Packer
 	// *will not* stop the instance but will assume that you will send the stop
 	// signal yourself through your final provisioner. You can do this with a
-	// [windows-shell provisioner](/docs/provisioners/windows-shell). Note that
+	// [windows-shell provisioner](/packer/plugins/provisioners/windows-shell). Note that
 	// Packer will still wait for the instance to be stopped, and failing to
 	// send the stop signal yourself, when you have set this flag to `true`,
 	// will cause a timeout.
@@ -130,6 +146,11 @@ type RunConfig struct {
 	// Optimized](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSOptimized.html).
 	// Default `false`.
 	EbsOptimized bool `mapstructure:"ebs_optimized" required:"false"`
+	// Enable support for Nitro Enclaves on the instance.  Note that the instance type must
+	// be able to [support Nitro Enclaves](https://aws.amazon.com/ec2/nitro/nitro-enclaves/faqs/).
+	// This option is not supported for spot instances.
+	EnableNitroEnclave bool `mapstructure:"enable_nitro_enclave" required:"false"`
+	// Deprecated argument - please use "enable_unlimited_credits".
 	// Enabling T2 Unlimited allows the source instance to burst additional CPU
 	// beyond its available [CPU
 	// Credits](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/t2-credits-baseline-concepts.html)
@@ -153,6 +174,26 @@ type RunConfig struct {
 	// Unlimited - even for instances that would usually qualify for the
 	// [AWS Free Tier](https://aws.amazon.com/free/).
 	EnableT2Unlimited bool `mapstructure:"enable_t2_unlimited" required:"false"`
+	// Enabling Unlimited credits allows the source instance to burst additional CPU
+	// beyond its available [CPU
+	// Credits](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-performance-instances-unlimited-mode-concepts.html#unlimited-mode-surplus-credits)
+	// for as long as the demand exists. This is in contrast to the standard
+	// configuration that only allows an instance to consume up to its
+	// available CPU Credits. See the AWS documentation for [T2
+	// Unlimited](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-performance-instances-unlimited-mode-concepts.html)
+	// and the **Unlimited Pricing** section of the [Amazon EC2 On-Demand
+	// Pricing](https://aws.amazon.com/ec2/pricing/on-demand/) document for
+	// more information. By default this option is disabled and Packer will set
+	// up a [Standard](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-performance-instances-standard-mode.html)
+	// instance instead.
+	//
+	// To use Unlimited you must use a T2/T3/T3a/T4g instance type, e.g. (`t2.micro`, `t3.micro`).
+	// Additionally, Unlimited cannot be used in conjunction with Spot
+	// Instances for T2 type instances, e.g. when the `spot_price` option has been configured.
+	// Attempting to do so will cause an error if the underlying instance type is a T2 type instance.
+	// By default the supported burstable instance types (including t3/t3a/t4g) will be provisioned with its cpu credits set to standard,
+	// only when `enable_unlimited_credits` is true will the instance be provisioned with unlimited cpu credits.
+	EnableUnlimitedCredits bool `mapstructure:"enable_unlimited_credits" required:"false"`
 	// The name of an [IAM instance
 	// profile](https://docs.aws.amazon.com/IAM/latest/UserGuide/instance-profiles.html)
 	// to launch the EC2 instance with.
@@ -161,7 +202,7 @@ type RunConfig struct {
 	FleetTags map[string]string `mapstructure:"fleet_tags" required:"false"`
 	// Same as [`fleet_tags`](#fleet_tags) but defined as a singular repeatable block
 	// containing a `key` and a `value` field. In HCL2 mode the
-	// [`dynamic_block`](/docs/templates/hcl_templates/expressions#dynamic-blocks)
+	// [`dynamic_block`](/packer/docs/templates/hcl_templates/expressions#dynamic-blocks)
 	// will allow you to create those programatically.
 	FleetTag config.KeyValues `mapstructure:"fleet_tag" required:"false"`
 	// Whether or not to check if the IAM instance profile exists. Defaults to false
@@ -175,7 +216,7 @@ type RunConfig struct {
 	//	Statement {
 	//		Action   = ["logs:*"]
 	//		Effect   = "Allow"
-	//		Resource = "*"
+	//		Resource = ["*"]
 	//	}
 	//	Version = "2012-10-17"
 	//}
@@ -191,7 +232,7 @@ type RunConfig struct {
 	//			"logs:*"
 	//			],
 	//			"Effect": "Allow",
-	//			"Resource": "*"
+	//			"Resource": ["*"]
 	//		}
 	//	]
 	//}
@@ -240,12 +281,12 @@ type RunConfig struct {
 	// Key/value pair tags to apply to the generated key-pair, security group, snapshot and instance
 	// that is *launched* to create the EBS volumes. The resulting AMI will also inherit these tags.
 	// This is a [template
-	// engine](/docs/templates/legacy_json_templates/engine), see [Build template
+	// engine](/packer/docs/templates/legacy_json_templates/engine), see [Build template
 	// data](#build-template-data) for more information.
 	RunTags map[string]string `mapstructure:"run_tags" required:"false"`
 	// Same as [`run_tags`](#run_tags) but defined as a singular repeatable
 	// block containing a `key` and a `value` field. In HCL2 mode the
-	// [`dynamic_block`](/docs/templates/hcl_templates/expressions#dynamic-blocks)
+	// [`dynamic_block`](/packer/docs/templates/hcl_templates/expressions#dynamic-blocks)
 	// will allow you to create those programatically.
 	RunTag config.KeyValues `mapstructure:"run_tag" required:"false"`
 	// The ID (not the name) of the security
@@ -360,7 +401,7 @@ type RunConfig struct {
 	SpotTags map[string]string `mapstructure:"spot_tags" required:"false"`
 	// Same as [`spot_tags`](#spot_tags) but defined as a singular repeatable block
 	// containing a `key` and a `value` field. In HCL2 mode the
-	// [`dynamic_block`](/docs/templates/hcl_templates/expressions#dynamic-blocks)
+	// [`dynamic_block`](/packer/docs/templates/hcl_templates/expressions#dynamic-blocks)
 	// will allow you to create those programatically.
 	SpotTag config.KeyValues `mapstructure:"spot_tag" required:"false"`
 	// Filters used to populate the `subnet_id` field.
@@ -493,9 +534,19 @@ type RunConfig struct {
 	// A list of IPv4 CIDR blocks to be authorized access to the instance, when
 	// packer is creating a temporary security group.
 	//
-	// The default is [`0.0.0.0/0`] (i.e., allow any IPv4 source). This is only
-	// used when `security_group_id` or `security_group_ids` is not specified.
+	// The default is [`0.0.0.0/0`] (i.e., allow any IPv4 source).
+	// Use `temporary_security_group_source_public_ip` to allow current host's
+	// public IP instead of any IPv4 source.
+	// This is only used when `security_group_id` or `security_group_ids` is not
+	// specified.
 	TemporarySGSourceCidrs []string `mapstructure:"temporary_security_group_source_cidrs" required:"false"`
+	// When enabled, use public IP of the host (obtained from https://checkip.amazonaws.com)
+	// as CIDR block to be authorized access to the instance, when packer
+	// is creating a temporary security group. Defaults to `false`.
+	//
+	// This is only used when `security_group_id`, `security_group_ids`,
+	// and `temporary_security_group_source_cidrs` are not specified.
+	TemporarySGSourcePublicIp bool `mapstructure:"temporary_security_group_source_public_ip" required:"false"`
 	// User data to apply when launching the instance. Note
 	// that you need to be careful about escaping characters due to the templates
 	// being JSON. It is often more convenient to use user_data_file, instead.
@@ -600,8 +651,6 @@ type RunConfig struct {
 }
 
 func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
-	// Validation
-	errs := c.Comm.Prepare(ctx)
 
 	// If we are not given an explicit ssh_keypair_name or
 	// ssh_private_key_file, then create a temporary one, but only if the
@@ -625,6 +674,14 @@ func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
 	if c.RunTags == nil {
 		c.RunTags = make(map[string]string)
 	}
+
+	// EnableT2Unlimited has been deprecated so we preserve any config settings.
+	if c.EnableT2Unlimited && !c.EnableUnlimitedCredits {
+		c.EnableUnlimitedCredits = c.EnableT2Unlimited
+	}
+
+	// Validation
+	errs := c.Comm.Prepare(ctx)
 
 	if c.Metadata.HttpEndpoint == "" {
 		c.Metadata.HttpEndpoint = "enabled"
@@ -765,7 +822,7 @@ func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
 		}
 	}
 
-	if len(c.TemporarySGSourceCidrs) == 0 {
+	if len(c.TemporarySGSourceCidrs) == 0 && !c.TemporarySGSourcePublicIp {
 		c.TemporarySGSourceCidrs = []string{"0.0.0.0/0"}
 	} else {
 		for _, cidr := range c.TemporarySGSourceCidrs {
@@ -781,16 +838,21 @@ func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
 		errs = append(errs, fmt.Errorf("shutdown_behavior only accepts 'stop' or 'terminate' values."))
 	}
 
-	if c.EnableT2Unlimited {
-		if c.SpotPrice != "" {
-			errs = append(errs, fmt.Errorf("Error: T2 Unlimited cannot be used in conjunction with Spot Instances"))
+	if c.EnableUnlimitedCredits {
+		if !c.IsBurstableInstanceType() {
+			errs = append(errs, fmt.Errorf("Error: Instance Type: %s is not within the supported types for Unlimited credits. Supported instance types are T2, T3, and T4g", c.InstanceType))
 		}
-		firstDotIndex := strings.Index(c.InstanceType, ".")
-		if firstDotIndex == -1 {
-			errs = append(errs, fmt.Errorf("Error determining main Instance Type from: %s", c.InstanceType))
-		} else if c.InstanceType[0:firstDotIndex] != "t2" {
-			errs = append(errs, fmt.Errorf("Error: T2 Unlimited enabled with a non-T2 Instance Type: %s", c.InstanceType))
+
+		if c.SpotPrice != "" && regexp.MustCompile(`^t2\.`).MatchString(c.InstanceType) {
+			errs = append(errs, fmt.Errorf("Error: Unlimited credits cannot be used in conjunction with Spot Instances"))
 		}
+
+	}
+
+	switch c.CapacityReservationPreference {
+	case "none", "open":
+	default:
+		errs = append(errs, fmt.Errorf(`capacity_reservation_preference only accepts 'none' or 'open' values`))
 	}
 
 	var tenancy string
@@ -812,6 +874,16 @@ func (c *RunConfig) Prepare(ctx *interpolate.Context) []error {
 		errs = append(errs, fmt.Errorf("Error: Unknown tenancy type %s", tenancy))
 	}
 
+	if c.EnableNitroEnclave {
+		if c.SpotPrice != "" {
+			errs = append(errs, fmt.Errorf("Error: Nitro Enclave cannot be used in conjunction with Spot Instances"))
+		}
+		// check if we have an instance in the t-line (burstable instances)
+		if strings.HasPrefix(c.InstanceType, "t") {
+			errs = append(errs, fmt.Errorf("Error: Nitro Enclaves cannot be used in conjunction with burstable instance types: %s", c.InstanceType))
+		}
+	}
+
 	return errs
 }
 
@@ -822,4 +894,11 @@ func (c *RunConfig) IsSpotInstance() bool {
 func (c *RunConfig) SSMAgentEnabled() bool {
 	hasIamInstanceProfile := c.IamInstanceProfile != "" || c.TemporaryIamInstanceProfilePolicyDocument != nil
 	return c.SSHInterface == "session_manager" && hasIamInstanceProfile
+}
+
+// IsBurstableInstanceType checks if the InstanceType for the config is one
+// of the following types T2, T3a, T3, T4g
+func (c *RunConfig) IsBurstableInstanceType() bool {
+	r := `^t(:?2|3a?|4g)\.`
+	return regexp.MustCompile(r).MatchString(c.InstanceType)
 }

@@ -88,6 +88,11 @@ type Config struct {
 	// okay to create this directory as part of the provisioning process.
 	// Defaults to /tmp.
 	X509UploadPath string `mapstructure:"x509_upload_path" required:"false"`
+	// Enforce version of the Instance Metadata Service on the built AMI.
+	// Valid options are unset (legacy) and `v2.0`. See the documentation on
+	// [IMDS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html)
+	// for more information. Defaults to legacy.
+	IMDSSupport string `mapstructure:"imds_support" required:"false"`
 
 	ctx interpolate.Context
 }
@@ -211,11 +216,12 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 			errs, fmt.Errorf("x509_key_path points to bad file: %s", err))
 	}
 
-	if b.config.IsSpotInstance() && ((b.config.AMIENASupport.True()) || b.config.AMISriovNetSupport) {
+	if b.config.IsSpotInstance() && ((b.config.AMIENASupport.True()) || b.config.AMISriovNetSupport || b.config.EnableNitroEnclave) {
 		errs = packersdk.MultiErrorAppend(errs,
 			fmt.Errorf("Spot instances do not support modification, which is required "+
-				"when either `ena_support` or `sriov_support` are set. Please ensure "+
-				"you use an AMI that already has either SR-IOV or ENA enabled."))
+				"when either `ena_support`, `sriov_support`, or `enable_nitro_enclave` "+
+				"are set. Please ensure you use an AMI that already has either SR-IOV "+
+				"or ENA enabled."))
 	}
 
 	if b.config.RunConfig.SpotPriceAutoProduct != "" {
@@ -224,6 +230,16 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 			"Packer, inclusion of spot_price_auto_product will error your "+
 			"builds. Please take a look at our current documentation to "+
 			"understand how Packer requests Spot instances.")
+	}
+
+	if b.config.RunConfig.EnableT2Unlimited {
+		warns = append(warns, "enable_t2_unlimited is deprecated please use "+
+			"enable_unlimited_credits. In future versions of "+
+			"Packer, inclusion of enable_t2_unlimited will error your builds.")
+	}
+
+	if b.config.IMDSSupport != "" && b.config.IMDSSupport != ec2.ImdsSupportValuesV20 {
+		errs = packersdk.MultiErrorAppend(errs, fmt.Errorf(`The only valid imds_support values are %q or the empty string`, ec2.ImdsSupportValuesV20))
 	}
 
 	if errs != nil && len(errs.Errors) > 0 {
@@ -268,6 +284,8 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Comm:                     &b.config.RunConfig.Comm,
 			Debug:                    b.config.PackerDebug,
 			EbsOptimized:             b.config.EbsOptimized,
+			IsBurstableInstanceType:  b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:   b.config.EnableUnlimitedCredits,
 			InstanceType:             b.config.InstanceType,
 			FleetTags:                b.config.FleetTags,
 			Region:                   *ec2conn.Config.Region,
@@ -291,23 +309,28 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 		}
 
 		instanceStep = &awscommon.StepRunSourceInstance{
-			PollingConfig:            b.config.PollingConfig,
-			AssociatePublicIpAddress: b.config.AssociatePublicIpAddress,
-			LaunchMappings:           b.config.LaunchMappings,
-			Comm:                     &b.config.RunConfig.Comm,
-			Ctx:                      b.config.ctx,
-			Debug:                    b.config.PackerDebug,
-			EbsOptimized:             b.config.EbsOptimized,
-			EnableT2Unlimited:        b.config.EnableT2Unlimited,
-			InstanceType:             b.config.InstanceType,
-			IsRestricted:             b.config.IsChinaCloud(),
-			SourceAMI:                b.config.SourceAmi,
-			Tags:                     b.config.RunTags,
-			LicenseSpecifications:    b.config.LicenseSpecifications,
-			HostResourceGroupArn:     b.config.Placement.HostResourceGroupArn,
-			Tenancy:                  tenancy,
-			UserData:                 b.config.UserData,
-			UserDataFile:             b.config.UserDataFile,
+			PollingConfig:                 b.config.PollingConfig,
+			AssociatePublicIpAddress:      b.config.AssociatePublicIpAddress,
+			LaunchMappings:                b.config.LaunchMappings,
+			CapacityReservationPreference: b.config.CapacityReservationPreference,
+			CapacityReservationId:         b.config.CapacityReservationId,
+			CapacityReservationGroupArn:   b.config.CapacityReservationGroupArn,
+			Comm:                          &b.config.RunConfig.Comm,
+			Ctx:                           b.config.ctx,
+			Debug:                         b.config.PackerDebug,
+			EbsOptimized:                  b.config.EbsOptimized,
+			EnableNitroEnclave:            b.config.EnableNitroEnclave,
+			IsBurstableInstanceType:       b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:        b.config.EnableUnlimitedCredits,
+			InstanceType:                  b.config.InstanceType,
+			IsRestricted:                  b.config.IsChinaCloud(),
+			SourceAMI:                     b.config.SourceAmi,
+			Tags:                          b.config.RunTags,
+			LicenseSpecifications:         b.config.LicenseSpecifications,
+			HostResourceGroupArn:          b.config.Placement.HostResourceGroupArn,
+			Tenancy:                       tenancy,
+			UserData:                      b.config.UserData,
+			UserDataFile:                  b.config.UserDataFile,
 		}
 	}
 
@@ -345,14 +368,15 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Ctx:          b.config.ctx,
 		},
 		&awscommon.StepSecurityGroup{
-			CommConfig:             &b.config.RunConfig.Comm,
-			SecurityGroupFilter:    b.config.SecurityGroupFilter,
-			SecurityGroupIds:       b.config.SecurityGroupIds,
-			TemporarySGSourceCidrs: b.config.TemporarySGSourceCidrs,
-			SkipSSHRuleCreation:    b.config.SSMAgentEnabled(),
-			IsRestricted:           b.config.IsChinaCloud(),
-			Tags:                   b.config.RunTags,
-			Ctx:                    b.config.ctx,
+			CommConfig:                &b.config.RunConfig.Comm,
+			SecurityGroupFilter:       b.config.SecurityGroupFilter,
+			SecurityGroupIds:          b.config.SecurityGroupIds,
+			TemporarySGSourceCidrs:    b.config.TemporarySGSourceCidrs,
+			TemporarySGSourcePublicIp: b.config.TemporarySGSourcePublicIp,
+			SkipSSHRuleCreation:       b.config.SSMAgentEnabled(),
+			IsRestricted:              b.config.IsChinaCloud(),
+			Tags:                      b.config.RunTags,
+			Ctx:                       b.config.ctx,
 		},
 		&awscommon.StepIamInstanceProfile{
 			IamInstanceProfile:                        b.config.IamInstanceProfile,
@@ -415,6 +439,7 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			EnableAMIENASupport:      b.config.AMIENASupport,
 			AMISkipBuildRegion:       b.config.AMISkipBuildRegion,
 			PollingConfig:            b.config.PollingConfig,
+			IMDSSupport:              b.config.IMDSSupport,
 		},
 		&awscommon.StepAMIRegionCopy{
 			AccessConfig:      &b.config.AccessConfig,

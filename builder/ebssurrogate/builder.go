@@ -59,7 +59,7 @@ type Config struct {
 	// Tags to apply to the volumes that are *launched* to create the AMI.
 	// These tags are *not* applied to the resulting AMI unless they're
 	// duplicated in `tags`. This is a [template
-	// engine](/docs/templates/legacy_json_templates/engine), see [Build template
+	// engine](/packer/docs/templates/legacy_json_templates/engine), see [Build template
 	// data](#build-template-data) for more information.
 	VolumeRunTags map[string]string `mapstructure:"run_volume_tags"`
 	// Same as [`run_volume_tags`](#run_volume_tags) but defined as a singular
@@ -75,6 +75,11 @@ type Config struct {
 	// more information. Defaults to `legacy-bios` when `ami_architecture` is `x86_64` and
 	// `uefi` when `ami_architecture` is `arm64`.
 	BootMode string `mapstructure:"boot_mode" required:"false"`
+	// Enforce version of the Instance Metadata Service on the built AMI.
+	// Valid options are unset (legacy) and `v2.0`. See the documentation on
+	// [IMDS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html)
+	// for more information. Defaults to legacy.
+	IMDSSupport string `mapstructure:"imds_support" required:"false"`
 
 	ctx interpolate.Context
 }
@@ -157,6 +162,12 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 			"understand how Packer requests Spot instances.")
 	}
 
+	if b.config.RunConfig.EnableT2Unlimited {
+		warns = append(warns, "enable_t2_unlimited is deprecated please use "+
+			"enable_unlimited_credits. In future versions of "+
+			"Packer, inclusion of enable_t2_unlimited will error your builds.")
+	}
+
 	if b.config.Architecture == "" {
 		b.config.Architecture = "x86_64"
 	}
@@ -169,6 +180,10 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 	}
 	if !valid {
 		errs = packersdk.MultiErrorAppend(errs, errors.New(`The only valid ami_architecture values are "arm64", "i386", "x86_64", or "x86_64_mac"`))
+	}
+
+	if b.config.IMDSSupport != "" && b.config.IMDSSupport != ec2.ImdsSupportValuesV20 {
+		errs = packersdk.MultiErrorAppend(errs, fmt.Errorf(`The only valid imds_support values are %q or the empty string`, ec2.ImdsSupportValuesV20))
 	}
 
 	if b.config.BootMode != "" {
@@ -228,6 +243,8 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Comm:                              &b.config.RunConfig.Comm,
 			Debug:                             b.config.PackerDebug,
 			EbsOptimized:                      b.config.EbsOptimized,
+			IsBurstableInstanceType:           b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:            b.config.EnableUnlimitedCredits,
 			ExpectedRootDevice:                "ebs",
 			HttpEndpoint:                      b.config.Metadata.HttpEndpoint,
 			HttpTokens:                        b.config.Metadata.HttpTokens,
@@ -261,11 +278,16 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			PollingConfig:                     b.config.PollingConfig,
 			AssociatePublicIpAddress:          b.config.AssociatePublicIpAddress,
 			LaunchMappings:                    b.config.LaunchMappings,
+			CapacityReservationPreference:     b.config.CapacityReservationPreference,
+			CapacityReservationId:             b.config.CapacityReservationId,
+			CapacityReservationGroupArn:       b.config.CapacityReservationGroupArn,
 			Comm:                              &b.config.RunConfig.Comm,
 			Ctx:                               b.config.ctx,
 			Debug:                             b.config.PackerDebug,
 			EbsOptimized:                      b.config.EbsOptimized,
-			EnableT2Unlimited:                 b.config.EnableT2Unlimited,
+			EnableNitroEnclave:                b.config.EnableNitroEnclave,
+			IsBurstableInstanceType:           b.config.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:            b.config.EnableUnlimitedCredits,
 			ExpectedRootDevice:                "ebs",
 			HttpEndpoint:                      b.config.Metadata.HttpEndpoint,
 			HttpTokens:                        b.config.Metadata.HttpTokens,
@@ -323,14 +345,15 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Ctx:          b.config.ctx,
 		},
 		&awscommon.StepSecurityGroup{
-			SecurityGroupFilter:    b.config.SecurityGroupFilter,
-			SecurityGroupIds:       b.config.SecurityGroupIds,
-			CommConfig:             &b.config.RunConfig.Comm,
-			TemporarySGSourceCidrs: b.config.TemporarySGSourceCidrs,
-			SkipSSHRuleCreation:    b.config.SSMAgentEnabled(),
-			IsRestricted:           b.config.IsChinaCloud(),
-			Tags:                   b.config.RunTags,
-			Ctx:                    b.config.ctx,
+			SecurityGroupFilter:       b.config.SecurityGroupFilter,
+			SecurityGroupIds:          b.config.SecurityGroupIds,
+			CommConfig:                &b.config.RunConfig.Comm,
+			TemporarySGSourceCidrs:    b.config.TemporarySGSourceCidrs,
+			TemporarySGSourcePublicIp: b.config.TemporarySGSourcePublicIp,
+			SkipSSHRuleCreation:       b.config.SSMAgentEnabled(),
+			IsRestricted:              b.config.IsChinaCloud(),
+			Tags:                      b.config.RunTags,
+			Ctx:                       b.config.ctx,
 		},
 		&awscommon.StepIamInstanceProfile{
 			IamInstanceProfile:                        b.config.IamInstanceProfile,
@@ -410,6 +433,7 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			AMISkipBuildRegion:       b.config.AMISkipBuildRegion,
 			PollingConfig:            b.config.PollingConfig,
 			BootMode:                 b.config.BootMode,
+			IMDSSupport:              b.config.IMDSSupport,
 		},
 		&awscommon.StepAMIRegionCopy{
 			AccessConfig:       &b.config.AccessConfig,

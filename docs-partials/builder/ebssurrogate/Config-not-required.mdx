@@ -19,7 +19,7 @@
 - `run_volume_tags` (map[string]string) - Tags to apply to the volumes that are *launched* to create the AMI.
   These tags are *not* applied to the resulting AMI unless they're
   duplicated in `tags`. This is a [template
-  engine](/docs/templates/legacy_json_templates/engine), see [Build template
+  engine](/packer/docs/templates/legacy_json_templates/engine), see [Build template
   data](#build-template-data) for more information.
 
 - `run_volume_tag` ([]{name string, value string}) - Same as [`run_volume_tags`](#run_volume_tags) but defined as a singular
@@ -34,5 +34,10 @@
   [boot modes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ami-boot.html) for
   more information. Defaults to `legacy-bios` when `ami_architecture` is `x86_64` and
   `uefi` when `ami_architecture` is `arm64`.
+
+- `imds_support` (string) - Enforce version of the Instance Metadata Service on the built AMI.
+  Valid options are unset (legacy) and `v2.0`. See the documentation on
+  [IMDS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html)
+  for more information. Defaults to legacy.
 
 <!-- End of code generated from the comments of the Config struct in builder/ebssurrogate/builder.go; -->

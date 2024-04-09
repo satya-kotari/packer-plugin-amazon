@@ -57,7 +57,7 @@ type Config struct {
 	// Tags to apply to the volumes that are *launched* to create the AMI.
 	// These tags are *not* applied to the resulting AMI unless they're
 	// duplicated in `tags`. This is a [template
-	// engine](/docs/templates/legacy_json_templates/engine), see [Build template
+	// engine](/packer/docs/templates/legacy_json_templates/engine), see [Build template
 	// data](#build-template-data) for more information.
 	VolumeRunTags map[string]string `mapstructure:"run_volume_tags"`
 	// Same as [`run_volume_tags`](#run_volume_tags) but defined as a singular
@@ -156,6 +156,12 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, []string, error) {
 			"understand how Packer requests Spot instances.")
 	}
 
+	if b.config.RunConfig.EnableT2Unlimited {
+		warns = append(warns, "enable_t2_unlimited is deprecated please use "+
+			"enable_unlimited_credits. In future versions of "+
+			"Packer, inclusion of enable_t2_unlimited will error your builds.")
+	}
+
 	if errs != nil && len(errs.Errors) > 0 {
 		return nil, warns, errs
 	}
@@ -200,6 +206,8 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Comm:                              &b.config.RunConfig.Comm,
 			Debug:                             b.config.PackerDebug,
 			EbsOptimized:                      b.config.EbsOptimized,
+			IsBurstableInstanceType:           b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:            b.config.EnableUnlimitedCredits,
 			ExpectedRootDevice:                "ebs",
 			FleetTags:                         b.config.FleetTags,
 			HttpEndpoint:                      b.config.Metadata.HttpEndpoint,
@@ -234,11 +242,16 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			PollingConfig:                     b.config.PollingConfig,
 			AssociatePublicIpAddress:          b.config.AssociatePublicIpAddress,
 			LaunchMappings:                    b.config.LaunchMappings,
+			CapacityReservationPreference:     b.config.CapacityReservationPreference,
+			CapacityReservationId:             b.config.CapacityReservationId,
+			CapacityReservationGroupArn:       b.config.CapacityReservationGroupArn,
 			Comm:                              &b.config.RunConfig.Comm,
 			Ctx:                               b.config.ctx,
 			Debug:                             b.config.PackerDebug,
 			EbsOptimized:                      b.config.EbsOptimized,
-			EnableT2Unlimited:                 b.config.EnableT2Unlimited,
+			EnableNitroEnclave:                b.config.EnableNitroEnclave,
+			IsBurstableInstanceType:           b.config.RunConfig.IsBurstableInstanceType(),
+			EnableUnlimitedCredits:            b.config.EnableUnlimitedCredits,
 			ExpectedRootDevice:                "ebs",
 			HttpEndpoint:                      b.config.Metadata.HttpEndpoint,
 			HttpTokens:                        b.config.Metadata.HttpTokens,
@@ -294,14 +307,15 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			Ctx:          b.config.ctx,
 		},
 		&awscommon.StepSecurityGroup{
-			SecurityGroupFilter:    b.config.SecurityGroupFilter,
-			SecurityGroupIds:       b.config.SecurityGroupIds,
-			CommConfig:             &b.config.RunConfig.Comm,
-			TemporarySGSourceCidrs: b.config.TemporarySGSourceCidrs,
-			SkipSSHRuleCreation:    b.config.SSMAgentEnabled(),
-			IsRestricted:           b.config.IsChinaCloud(),
-			Tags:                   b.config.RunTags,
-			Ctx:                    b.config.ctx,
+			SecurityGroupFilter:       b.config.SecurityGroupFilter,
+			SecurityGroupIds:          b.config.SecurityGroupIds,
+			CommConfig:                &b.config.RunConfig.Comm,
+			TemporarySGSourceCidrs:    b.config.TemporarySGSourceCidrs,
+			TemporarySGSourcePublicIp: b.config.TemporarySGSourcePublicIp,
+			SkipSSHRuleCreation:       b.config.SSMAgentEnabled(),
+			IsRestricted:              b.config.IsChinaCloud(),
+			Tags:                      b.config.RunTags,
+			Ctx:                       b.config.ctx,
 		},
 		&awscommon.StepIamInstanceProfile{
 			IamInstanceProfile:                        b.config.IamInstanceProfile,
@@ -382,6 +396,7 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
 			AMISkipBuildRegion: b.config.AMISkipBuildRegion,
 		},
 		&stepEnableDeprecation{
+			AccessConfig:       &b.config.AccessConfig,
 			DeprecationTime:    b.config.DeprecationTime,
 			AMISkipCreateImage: b.config.AMISkipCreateImage,
 		},

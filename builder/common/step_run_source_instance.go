@@ -24,11 +24,14 @@ type StepRunSourceInstance struct {
 	PollingConfig                     *AWSPollingConfig
 	AssociatePublicIpAddress          confighelper.Trilean
 	LaunchMappings                    EC2BlockDeviceMappingsBuilder
+	CapacityReservationPreference     string
+	CapacityReservationId             string
+	CapacityReservationGroupArn       string
 	Comm                              *communicator.Config
 	Ctx                               interpolate.Context
 	Debug                             bool
 	EbsOptimized                      bool
-	EnableT2Unlimited                 bool
+	EnableUnlimitedCredits            bool
 	ExpectedRootDevice                string
 	HttpEndpoint                      string
 	HttpTokens                        string
@@ -46,6 +49,8 @@ type StepRunSourceInstance struct {
 	UserDataFile                      string
 	VolumeTags                        map[string]string
 	NoEphemeral                       bool
+	EnableNitroEnclave                bool
+	IsBurstableInstanceType           bool
 
 	instanceId string
 }
@@ -109,6 +114,10 @@ func (s *StepRunSourceInstance) Run(ctx context.Context, state multistep.StateBa
 		return multistep.ActionHalt
 	}
 
+	enclaveOptions := ec2.EnclaveOptionsRequest{
+		Enabled: &s.EnableNitroEnclave,
+	}
+
 	az := state.Get("availability_zone").(string)
 	runOpts := &ec2.RunInstancesInput{
 		ImageId:             &s.SourceAMI,
@@ -120,6 +129,7 @@ func (s *StepRunSourceInstance) Run(ctx context.Context, state multistep.StateBa
 		BlockDeviceMappings: s.LaunchMappings.BuildEC2BlockDeviceMappings(),
 		Placement:           &ec2.Placement{AvailabilityZone: &az},
 		EbsOptimized:        &s.EbsOptimized,
+		EnclaveOptions:      &enclaveOptions,
 	}
 
 	if s.NoEphemeral {
@@ -141,9 +151,12 @@ func (s *StepRunSourceInstance) Run(ctx context.Context, state multistep.StateBa
 		}
 	}
 
-	if s.EnableT2Unlimited {
-		creditOption := "unlimited"
-		runOpts.CreditSpecification = &ec2.CreditSpecificationRequest{CpuCredits: &creditOption}
+	if s.IsBurstableInstanceType {
+		runOpts.CreditSpecification = &ec2.CreditSpecificationRequest{CpuCredits: aws.String(CPUCreditsStandard)}
+	}
+
+	if s.EnableUnlimitedCredits {
+		runOpts.CreditSpecification = &ec2.CreditSpecificationRequest{CpuCredits: aws.String(CPUCreditsUnlimited)}
 	}
 
 	if s.HttpEndpoint == "enabled" {
@@ -220,6 +233,24 @@ func (s *StepRunSourceInstance) Run(ctx context.Context, state multistep.StateBa
 				},
 			}
 			runOpts.LicenseSpecifications = append(runOpts.LicenseSpecifications, licenseSpecifications...)
+		}
+	}
+
+	if s.CapacityReservationPreference != "" {
+		runOpts.CapacityReservationSpecification = &ec2.CapacityReservationSpecification{
+			CapacityReservationPreference: aws.String(s.CapacityReservationPreference),
+		}
+	}
+
+	if s.CapacityReservationId != "" || s.CapacityReservationGroupArn != "" {
+		runOpts.CapacityReservationSpecification.CapacityReservationTarget = &ec2.CapacityReservationTarget{}
+
+		if s.CapacityReservationId != "" {
+			runOpts.CapacityReservationSpecification.CapacityReservationTarget.CapacityReservationId = aws.String(s.CapacityReservationId)
+		}
+
+		if s.CapacityReservationGroupArn != "" {
+			runOpts.CapacityReservationSpecification.CapacityReservationTarget.CapacityReservationResourceGroupArn = aws.String(s.CapacityReservationGroupArn)
 		}
 	}
 
