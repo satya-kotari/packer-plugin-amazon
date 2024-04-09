@@ -236,7 +236,7 @@ func (s *StepRunSourceInstance) Run(ctx context.Context, state multistep.StateBa
 		}
 	}
 
-	if s.CapacityReservationPreference != "" {
+	if s.CapacityReservationPreference != nil {
 		runOpts.CapacityReservationSpecification = &ec2.CapacityReservationSpecification{
 			CapacityReservationPreference: aws.String(s.CapacityReservationPreference),
 		}
